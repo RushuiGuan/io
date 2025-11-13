@@ -8,36 +8,53 @@ using Polly.Retry;
 
 namespace Albatross.IO {
 	public static class StreamExtensions {
-		public static Task<Stream> OpenSharedReadStreamWithRetry(this FileInfo file, int bufferSize, int retryCount, int delay_ms, FileOptions fileOptions, ILogger logger, Action<int>? onRetry = null, CancellationToken? cancellationToken = null) {
-			var policy = CreateRetryPolicy(retryCount, delay_ms, onRetry, logger);
-			var context = new Context(file.FullName);
-			context["action"] = "open-async-shared-read";
-			return policy.ExecuteAsync((ctx, token) => {
-				Stream stream = new FileStream(file.FullName, FileMode.Open, FileAccess.Read, FileShare.Read, bufferSize, fileOptions);
-				return Task.FromResult(stream);
-			}, context, cancellationToken ?? CancellationToken.None);
+		public static ValueTask<Stream> OpenSharedReadStreamWithRetry(this FileInfo file, int bufferSize, int retryCount, TimeSpan delay, FileOptions fileOptions, ILogger logger, Action<int>? onRetry = null, CancellationToken cancellationToken = default) {
+			var policy = CreateRetryPolicy(retryCount, delay, onRetry, logger);
+			var context = ResilienceContextPool.Shared.Get(file.FullName, cancellationToken);
+			try {
+				context.Properties.Set(new ResiliencePropertyKey<string>("action"), "open-async-shared-read");
+				return policy.ExecuteAsync<Stream, ResilienceContext>((ctx, token) => {
+					Stream stream = new FileStream(file.FullName, FileMode.Open, FileAccess.Read, FileShare.Read, bufferSize, fileOptions);
+					return new ValueTask<Stream>(stream);
+				}, context, cancellationToken);
+			} finally {
+				ResilienceContextPool.Shared.Return(context);
+			}
 		}
 
-		public static Task<Stream> OpenExclusiveReadWriteStreamWithRetry(this FileInfo file, int bufferSize, int retryCount, int delay_ms, FileOptions fileOptions, ILogger logger, Action<int>? onRetry = null, CancellationToken? cancellationToken = null) {
-			var policy = CreateRetryPolicy(retryCount, delay_ms, onRetry, logger);
-			var context = new Context(file.FullName);
-			context["action"] = "open-async-exclusive-readwrite";
-			return policy.ExecuteAsync((ctx, token) => {
-				Stream stream = new FileStream(file.FullName, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None, bufferSize, fileOptions);
-				return Task.FromResult(stream);
-			}, context, cancellationToken ?? CancellationToken.None);
+		public static ValueTask<Stream> OpenExclusiveReadWriteStreamWithRetry(this FileInfo file, int bufferSize, int retryCount, TimeSpan delay, FileOptions fileOptions, ILogger logger, Action<int>? onRetry = null, CancellationToken cancellationToken = default) {
+			var policy = CreateRetryPolicy(retryCount, delay, onRetry, logger);
+			var context = ResilienceContextPool.Shared.Get(file.FullName, cancellationToken);
+			try {
+				context.Properties.Set(new ResiliencePropertyKey<string>("action"), "open-async-exclusive-readwrite");
+				return policy.ExecuteAsync<Stream, ResilienceContext>((ctx, token) => {
+					Stream stream = new FileStream(file.FullName, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None, bufferSize, fileOptions);
+					return new ValueTask<Stream>(stream);
+				}, context, cancellationToken);
+			} finally {
+				ResilienceContextPool.Shared.Return(context);
+			}
 		}
 
 		const int ErrorSharingViolation = unchecked((int)0x80070020);
-		static AsyncRetryPolicy<Stream> CreateRetryPolicy(int count, int delay_ms, Action<int>? action, ILogger logger) {
-			return Policy.Handle<IOException>(err => err.HResult == ErrorSharingViolation)
-				.OrResult<Stream>(x => false)
-				.WaitAndRetryAsync<Stream>(count, x => TimeSpan.FromMilliseconds(delay_ms), (result, delay, count, context) => {
-					if (action != null) {
-						action(count);
+
+		static ResiliencePipeline<Stream> CreateRetryPolicy(int count, TimeSpan delay, Action<int>? action, ILogger logger) =>
+			new ResiliencePipelineBuilder<Stream>()
+				.AddRetry(new RetryStrategyOptions<Stream> {
+					MaxRetryAttempts = count,
+					Delay = delay,
+					BackoffType = DelayBackoffType.Constant,
+					ShouldHandle = new PredicateBuilder<Stream>().Handle<IOException>(static err => err is not FileNotFoundException 
+					                                                                                && err is not DirectoryNotFoundException 
+					                                                                                && err is not PathTooLongException),
+					OnRetry = args => {
+						if (action != null) {
+							action(args.AttemptNumber);
+						}
+						logger.LogWarning("{attempt} retry to open file {name} for {action} after {delay:#,#}ms",
+							args.AttemptNumber, args.Context.OperationKey, args.Context.Properties.GetValue(new ResiliencePropertyKey<string>("action"), "unknown action"), args.RetryDelay.TotalMilliseconds);
+						return default; // required because OnRetry is ValueTask
 					}
-					logger.LogWarning("{count} retry to open file {name} for {action} after {delay:#,#}ms", count, context.OperationKey, context["action"], delay.Milliseconds);
-				});
-		}
+				}).Build();
 	}
 }
