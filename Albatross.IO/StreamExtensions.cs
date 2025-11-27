@@ -36,8 +36,6 @@ namespace Albatross.IO {
 			}
 		}
 
-		const int ErrorSharingViolation = unchecked((int)0x80070020);
-
 		static ResiliencePipeline<Stream> CreateRetryPolicy(int count, TimeSpan delay, Action<int>? action, ILogger logger) =>
 			new ResiliencePipelineBuilder<Stream>()
 				.AddRetry(new RetryStrategyOptions<Stream> {
