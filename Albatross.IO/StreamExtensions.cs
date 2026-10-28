@@ -8,29 +8,31 @@ using Polly.Retry;
 
 namespace Albatross.IO {
 	public static class StreamExtensions {
-		public static ValueTask<Stream> OpenSharedReadStreamWithRetry(this FileInfo file, int bufferSize, int retryCount, TimeSpan delay, FileOptions fileOptions, ILogger logger, Action<int>? onRetry = null, CancellationToken cancellationToken = default) {
+		public static async ValueTask<Stream> OpenSharedReadStreamWithRetry(this FileInfo file, int bufferSize, int retryCount, TimeSpan delay, FileOptions fileOptions, ILogger logger, Action<int>? onRetry = null, CancellationToken cancellationToken = default) {
 			var policy = CreateRetryPolicy(retryCount, delay, onRetry, logger);
 			var context = ResilienceContextPool.Shared.Get(file.FullName, cancellationToken);
 			try {
 				context.Properties.Set(new ResiliencePropertyKey<string>("action"), "open-async-shared-read");
-				return policy.ExecuteAsync<Stream, ResilienceContext>((ctx, token) => {
+				// the context must stay rented until all retries complete
+				return await policy.ExecuteAsync(ctx => {
 					Stream stream = new FileStream(file.FullName, FileMode.Open, FileAccess.Read, FileShare.Read, bufferSize, fileOptions);
 					return new ValueTask<Stream>(stream);
-				}, context, cancellationToken);
+				}, context);
 			} finally {
 				ResilienceContextPool.Shared.Return(context);
 			}
 		}
 
-		public static ValueTask<Stream> OpenExclusiveReadWriteStreamWithRetry(this FileInfo file, int bufferSize, int retryCount, TimeSpan delay, FileOptions fileOptions, ILogger logger, Action<int>? onRetry = null, CancellationToken cancellationToken = default) {
+		public static async ValueTask<Stream> OpenExclusiveReadWriteStreamWithRetry(this FileInfo file, int bufferSize, int retryCount, TimeSpan delay, FileOptions fileOptions, ILogger logger, Action<int>? onRetry = null, CancellationToken cancellationToken = default) {
 			var policy = CreateRetryPolicy(retryCount, delay, onRetry, logger);
 			var context = ResilienceContextPool.Shared.Get(file.FullName, cancellationToken);
 			try {
 				context.Properties.Set(new ResiliencePropertyKey<string>("action"), "open-async-exclusive-readwrite");
-				return policy.ExecuteAsync<Stream, ResilienceContext>((ctx, token) => {
+				// the context must stay rented until all retries complete
+				return await policy.ExecuteAsync(ctx => {
 					Stream stream = new FileStream(file.FullName, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None, bufferSize, fileOptions);
 					return new ValueTask<Stream>(stream);
-				}, context, cancellationToken);
+				}, context);
 			} finally {
 				ResilienceContextPool.Shared.Return(context);
 			}

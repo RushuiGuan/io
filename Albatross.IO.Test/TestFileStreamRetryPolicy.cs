@@ -54,6 +54,21 @@ namespace Albatross.IO.Test {
 			Assert.Equal(3, attemptCount);
 		}
 
+		[Fact]
+		public async Task TestRetryLog_HasFileNameAndAction() {
+			var path = CreateTestFile("test");
+			var logger = new Mock<ILogger>();
+			var file = new FileInfo(path);
+
+			var writeStream = await file.OpenExclusiveReadWriteStreamWithRetry(4096, 3, TimeSpan.FromMilliseconds(100), FileOptions.None, logger.Object);
+			_ = Task.Delay(300).ContinueWith(x => writeStream.Dispose());
+			using (var readStream = await file.OpenSharedReadStreamWithRetry(4096, 10, TimeSpan.FromMilliseconds(100), FileOptions.None, logger.Object)) { }
+
+			logger.Verify(x => x.Log(LogLevel.Warning, It.IsAny<EventId>(),
+				It.Is<It.IsAnyType>((v, t) => v.ToString()!.Contains(file.FullName) && v.ToString()!.Contains("open-async-shared-read")),
+				It.IsAny<Exception?>(), It.IsAny<Func<It.IsAnyType, Exception?, string>>()), Times.AtLeastOnce());
+		}
+
 		string CreateTestFile(string text) {
 			var file = Path.GetTempFileName();
 			using (var writer = new StreamWriter(file)) {
